@@ -2,6 +2,7 @@ import os
 import json
 import uuid
 import asyncio
+from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
@@ -12,6 +13,9 @@ from models import init_db, Run, Task
 from engine import HardenedRunnerEngine
 from events import event_bus
 from schemas import DAGPayload, RunResponse, export_api_schema
+
+# Active engine registry for termination control
+active_engines: Dict[str, HardenedRunnerEngine] = {}
 
 app = FastAPI(title="biograph Reactive Backend")
 SessionLocal = init_db()
@@ -26,6 +30,44 @@ app.add_middleware(
 # Export schema on startup
 os.makedirs("../frontend/types", exist_ok=True)
 export_api_schema("../frontend/types/generated.json")
+
+@app.post("/runs/{run_id}/heartbeat")
+async def run_heartbeat(run_id: str):
+    """CLI/Engine check-in to confirm the process is still alive."""
+    session = SessionLocal()
+    run = session.query(Run).filter_by(id=run_id).first()
+    if run:
+        run.last_heartbeat = datetime.utcnow()
+        session.commit()
+    session.close()
+    return {"status": "ok"}
+
+async def monitor_zombie_runs():
+    """Background loop to detect and mark stalled/crashed runs."""
+    while True:
+        await asyncio.sleep(15) # Check every 15 seconds
+        session = SessionLocal()
+        threshold = datetime.utcnow() - timedelta(seconds=45)
+        
+        # Find runs that are 'running' but haven't checked in recently
+        stalled_runs = session.query(Run).filter(
+            Run.status == "running",
+            Run.last_heartbeat < threshold
+        ).all()
+        
+        for run in stalled_runs:
+            run.status = "stalled"
+            run.error_type = "HEARTBEAT_LOST"
+            run.suggested_fix = "The execution process may have crashed or was killed externally. Check system logs."
+            await event_bus.publish(run.id, "done", {"status": "stalled"})
+            
+        if stalled_runs:
+            session.commit()
+        session.close()
+
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(monitor_zombie_runs())
 
 # --- Endpoints ---
 
@@ -98,6 +140,32 @@ async def delete_run(run_id: str):
     session.close()
     return {"status": "deleted"}
 
+@app.get("/runs/{run_id}/logs/chunked")
+async def get_logs_chunked(run_id: str, offset: int = 0, limit: int = 100):
+    """Retrieve logs in slices to support frontend virtualization and prevent OOM."""
+    session = SessionLocal()
+    run = session.query(Run).filter_by(id=run_id).first()
+    if not run:
+        session.close()
+        raise HTTPException(status_code=404)
+    
+    # Merge all task logs into a single lines array for this demo
+    all_lines = []
+    for t in run.tasks:
+        text = (t.stdout or "") + (t.stderr or "")
+        for line in text.split('\n'):
+            if line.strip():
+                all_lines.append(f"[{t.node_id}] {line.strip()}")
+    
+    chunk = all_lines[offset : offset + limit]
+    session.close()
+    return {
+        "lines": chunk,
+        "total": len(all_lines),
+        "offset": offset,
+        "limit": limit
+    }
+
 @app.post("/runs", status_code=202)
 async def create_run(dag: DAGPayload, background_tasks: BackgroundTasks):
     """Initiate a non-blocking pipeline run."""
@@ -149,6 +217,24 @@ async def stream_run_events(run_id: str, request: Request):
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
+@app.post("/runs/{run_id}/terminate")
+async def terminate_run(run_id: str):
+    """Abort an active run by killing its process group."""
+    if run_id in active_engines:
+        engine = active_engines[run_id]
+        engine.cleanup_processes()
+        
+        session = SessionLocal()
+        run = session.query(Run).filter_by(id=run_id).first()
+        if run:
+            run.status = "aborted"
+            session.commit()
+        session.close()
+        
+        await event_bus.publish(run_id, "done", {"status": "aborted"})
+        return {"status": "terminated"}
+    raise HTTPException(status_code=404, detail="Active run not found or already finished")
+
 @app.get("/data/{run_id}/{filename}")
 async def serve_data(run_id: str, filename: str):
     """Securely serve biological output files."""
@@ -170,12 +256,14 @@ async def run_executor(run_id: str, dag_json: dict):
     """Background task that runs the engine and publishes to the bus."""
     session = SessionLocal()
     engine = HardenedRunnerEngine(session)
+    active_engines[run_id] = engine
     
-    # Execute and emit events
-    # The RunnerEngine now calls event_bus.publish internally
-    await engine.execute_dag(run_id, dag_json)
-    
-    session.close()
+    try:
+        await engine.execute_dag(run_id, dag_json)
+    finally:
+        if run_id in active_engines:
+            del active_engines[run_id]
+        session.close()
 
 if __name__ == "__main__":
     import uvicorn

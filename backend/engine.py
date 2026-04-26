@@ -16,6 +16,9 @@ class HardenedRunnerEngine:
         self.active_processes = []
 
     async def execute_dag(self, run_id: str, dag_json: dict, start_node_id: str = None):
+        # Start heartbeat monitor
+        heartbeat_task = asyncio.create_task(self._emit_heartbeat(run_id))
+        
         run = self.session.query(Run).filter_by(id=run_id).first()
         tasks = {t.node_id: t for t in run.tasks}
         
@@ -58,7 +61,27 @@ class HardenedRunnerEngine:
             await event_bus.publish(run_id, "done", {"status": "success"})
 
         finally:
+            heartbeat_task.cancel()
             self.cleanup_processes()
+
+    async def _emit_heartbeat(self, run_id: str):
+        """Periodic background task to update the liveness timestamp in the DB."""
+        while True:
+            try:
+                # Use a fresh session for heartbeat to avoid interfering with main execution
+                from models import Run, init_db
+                HeartbeatSession = init_db()
+                with HeartbeatSession() as hb_session:
+                    run = hb_session.query(Run).filter_by(id=run_id).first()
+                    if run:
+                        run.last_heartbeat = datetime.utcnow()
+                        hb_session.commit()
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"Heartbeat error: {e}")
+                await asyncio.sleep(5)
 
     async def _run_task_supervised(self, task: Task, node_meta: dict, run_id: str):
         task.status = "running"

@@ -88,7 +88,8 @@ def run(dag_path):
     click.echo(f"[*] Started Run: {run_record.id}")
     
     try:
-        engine.execute_dag(run_record.id, dag_json)
+        import asyncio
+        asyncio.run(engine.execute_dag(run_record.id, dag_json))
     finally:
         session.refresh(run_record)
         

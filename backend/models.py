@@ -14,6 +14,7 @@ class Run(Base):
     status = Column(String, default='pending')
     start_time = Column(DateTime, default=datetime.utcnow)
     end_time = Column(DateTime)
+    last_heartbeat = Column(DateTime, default=datetime.utcnow) # Track liveness
     error_type = Column(String)
     suggested_fix = Column(Text)
     tasks = relationship("Task", back_populates="run")
