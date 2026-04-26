@@ -2,3 +2,5 @@ node_modules/
 venv/
 storage/
 __pycache__/
+biograph.db
+*.pyc
