@@ -1,0 +1,13 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  overflow: hidden;
+}
+
+.react-flow__node {
+  border-radius: 8px !important;
+  font-family: 'JetBrains Mono', monospace;
+}
