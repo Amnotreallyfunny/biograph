@@ -7,7 +7,7 @@ import asyncio
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 from models import init_db, Run, Task
 from engine import HardenedRunnerEngine, stream_manager
@@ -21,6 +21,67 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.get("/runs")
+async def list_runs():
+    session = SessionLocal()
+    runs = session.query(Run).order_by(Run.start_time.desc()).all()
+    res = [{"id": r.id, "name": r.name, "status": r.status, "start_time": r.start_time} for r in runs]
+    session.close()
+    return res
+
+@app.get("/runs/{run_id}")
+async def get_run(run_id: str):
+    session = SessionLocal()
+    run = session.query(Run).filter_by(id=run_id).first()
+    if not run:
+        session.close()
+        raise HTTPException(status_code=404, detail="Run not found")
+    
+    # Map task statuses for the UI
+    node_states = {t.node_id: t.status for t in run.tasks}
+    logs = {t.node_id: (t.stdout or "") + (t.stderr or "") for t in run.tasks}
+    
+    res = {
+        "id": run.id,
+        "name": run.name,
+        "status": run.status,
+        "node_states": node_states,
+        "logs": logs
+    }
+    session.close()
+    return res
+
+@app.patch("/runs/{run_id}")
+async def update_run(run_id: str, updates: Dict[str, Any]):
+    session = SessionLocal()
+    run = session.query(Run).filter_by(id=run_id).first()
+    if not run:
+        session.close()
+        raise HTTPException(status_code=404, detail="Run not found")
+    
+    for key, value in updates.items():
+        if hasattr(run, key):
+            setattr(run, key, value)
+    
+    session.commit()
+    session.close()
+    return {"status": "updated"}
+
+@app.delete("/runs/{run_id}")
+async def delete_run(run_id: str):
+    session = SessionLocal()
+    run = session.query(Run).filter_by(id=run_id).first()
+    if not run:
+        session.close()
+        raise HTTPException(status_code=404, detail="Run not found")
+    
+    # Cascade delete tasks
+    session.query(Task).filter_by(run_id=run_id).delete()
+    session.delete(run)
+    session.commit()
+    session.close()
+    return {"status": "deleted"}
 
 @app.post("/runs")
 async def trigger_run(payload: Dict[str, Any], background_tasks: BackgroundTasks):
@@ -44,9 +105,7 @@ async def trigger_run(payload: Dict[str, Any], background_tasks: BackgroundTasks
 
 @app.post("/runs/{run_id}/retry")
 async def retry_task(run_id: str, payload: Dict[str, Any], background_tasks: BackgroundTasks):
-    task_node_id = payload["task_id"]
-    # In Phase 1, we'll simple re-trigger the original DAG from that node
-    # Implementation simplified: finding the original DAG
+    # Implementation placeholder for node-level retry
     return {"message": "Retry enqueued", "new_run_id": run_id}
 
 @app.get("/runs/{run_id}/stream")
@@ -62,9 +121,7 @@ async def stream_run(run_id: str, request: Request):
                 if msg['event'] == 'done':
                     break
         finally:
-            # stream_manager.cleanup(run_id) # Optional: delayed cleanup
             pass
-
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 @app.get("/system/doctor")
@@ -74,16 +131,13 @@ async def system_doctor():
     for t in tools:
         path = shutil.which(t)
         tool_status.append({
-            "name": t,
-            "status": "ok" if path else "missing",
-            "version": "unknown" if not path else "detected",
+            "name": t, "status": "ok" if path else "missing",
+            "version": "detected" if path else "none",
             "fix": None if path else f"conda install -c bioconda {t}"
         })
-    
     return {
         "python": f"{sys.version_info.major}.{sys.version_info.minor}",
-        "sqlite": "ok",
-        "tools": tool_status
+        "sqlite": "ok", "tools": tool_status
     }
 
 async def execute_in_background(run_id: str, dag_json: dict):

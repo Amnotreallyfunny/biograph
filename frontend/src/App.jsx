@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import axios from 'axios';
 import ReactFlow, { Background, Controls } from 'reactflow';
@@ -105,7 +105,6 @@ const RunCreator = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    // Simplified DAG generation for demo
     const mockDag = {
       name: formData.name,
       nodes: [
@@ -160,11 +159,38 @@ const RunCreator = () => {
 
 const Dashboard = () => {
   const [runs, setRuns] = useState([]);
+  const [doctor, setDoctor] = useState(null);
   const [selectedForCompare, setSelectedForCompare] = useState([]);
 
-  useEffect(() => {
+  const fetchRuns = useCallback(() => {
     axios.get(`${API_BASE}/runs`).then(res => setRuns(res.data));
   }, []);
+
+  useEffect(() => {
+    fetchRuns();
+    const interval = setInterval(fetchRuns, 5000);
+    axios.get(`${API_BASE}/system/doctor`).then(res => setDoctor(res.data));
+    return () => clearInterval(interval);
+  }, [fetchRuns]);
+
+  const deleteRun = async (id, e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (window.confirm("Are you sure you want to delete this run and all its data?")) {
+      await axios.delete(`${API_BASE}/runs/${id}`);
+      fetchRuns();
+    }
+  };
+
+  const renameRun = async (id, currentName, e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const newName = window.prompt("Enter new name for this run:", currentName);
+    if (newName && newName !== currentName) {
+      await axios.patch(`${API_BASE}/runs/${id}`, { name: newName });
+      fetchRuns();
+    }
+  };
 
   const toggleSelect = (id) => {
     if (selectedForCompare.includes(id)) {
@@ -207,7 +233,12 @@ const Dashboard = () => {
                 />
                 <div>
                   <div className="font-mono text-[10px] text-slate-400 mb-1">{run.id}</div>
-                  <Link to={`/run/${run.id}`} className="font-bold text-slate-800 text-lg hover:text-blue-600">{run.name}</Link>
+                  <div className="flex items-center gap-2">
+                    <Link to={`/run/${run.id}`} className="font-bold text-slate-800 text-lg hover:text-blue-600">{run.name}</Link>
+                    <button onClick={(e) => renameRun(run.id, run.name, e)} className="p-1 text-slate-300 hover:text-slate-600 opacity-0 group-hover:opacity-100 transition-all">
+                      <Settings size={14}/>
+                    </button>
+                  </div>
                 </div>
               </div>
               <div className="flex items-center gap-8">
@@ -217,12 +248,23 @@ const Dashboard = () => {
                     {run.status}
                   </span>
                 </div>
-                <Link to={`/new?clone=${run.id}`} title="Clone Run" className="p-2 text-slate-400 hover:text-blue-600 transition-colors">
-                  <Copy size={20}/>
-                </Link>
+                <div className="flex gap-2">
+                  <Link to={`/new?clone=${run.id}`} title="Clone Run" className="p-2 text-slate-400 hover:text-blue-600 transition-colors">
+                    <Copy size={20}/>
+                  </Link>
+                  <button onClick={(e) => deleteRun(run.id, e)} className="p-2 text-slate-400 hover:text-rose-600 transition-colors">
+                    <X size={20}/>
+                  </button>
+                </div>
               </div>
             </div>
           ))}
+          {runs.length === 0 && (
+            <div className="text-center py-20 bg-white rounded-2xl border-2 border-dashed border-slate-200">
+               <Database size={48} className="mx-auto mb-4 text-slate-200"/>
+               <p className="text-slate-400 font-mono">NO_DATA_RECORDS_DETECTED</p>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -231,19 +273,58 @@ const Dashboard = () => {
 
 const RunView = () => {
   const { runId } = useParams();
-  const { logs, nodeStatus, isDone } = useRunStream(runId);
+  const { logs: streamLogs, nodeStatus, isDone } = useRunStream(runId);
   const [run, setRun] = useState(null);
+  const [nodes, setNodes] = useState([]);
+  const [edges, setEdges] = useState([]);
+  const [historicalLogs, setHistoricalLogs] = useState([]);
   const logEndRef = useRef(null);
 
   useEffect(() => {
-    axios.get(`${API_BASE}/runs/${runId}`).then(res => setRun(res.data));
-  }, [runId]);
+    axios.get(`${API_BASE}/runs/${runId}`).then(res => {
+      setRun(res.data);
+      
+      // Load historical logs if available
+      const allHistLogs = [];
+      Object.entries(res.data.logs || {}).forEach(([nodeId, logText]) => {
+        logText.split('\n').forEach(line => {
+           if(line.trim()) allHistLogs.push(`[${nodeId}] ${line.trim()}`);
+        });
+      });
+      setHistoricalLogs(allHistLogs);
+
+      const newNodes = Object.keys(res.data.node_states).map((id, i) => {
+        const currentStatus = nodeStatus[id] || res.data.node_states[id];
+        return {
+          id,
+          data: { label: id },
+          position: { x: 50 + (i * 200), y: 100 },
+          style: { 
+            background: currentStatus === 'success' ? '#dcfce7' : 
+                       currentStatus === 'running' ? '#dbeafe' : 
+                       currentStatus === 'failed' ? '#fee2e2' : '#fff',
+            border: '2px solid ' + (currentStatus === 'success' ? '#10b981' : 
+                                   currentStatus === 'running' ? '#3b82f6' : 
+                                   currentStatus === 'failed' ? '#ef4444' : '#e2e8f0'),
+            borderRadius: '12px',
+            fontSize: '10px',
+            fontWeight: 'bold',
+            padding: '10px',
+            textAlign: 'center',
+            width: 150
+          }
+        };
+      });
+      setNodes(newNodes);
+    });
+  }, [runId, nodeStatus]);
+
+  const allLogs = isDone || !runId ? historicalLogs : [...historicalLogs, ...streamLogs];
 
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [logs]);
+  }, [allLogs]);
 
-  // Mock data for QC visualization
   const qcData = [
     { name: 'R1', value: 95 },
     { name: 'R2', value: 88, status: 'suspicious' },
@@ -270,12 +351,12 @@ const RunView = () => {
         </div>
 
         <div className="flex-1 grid grid-cols-3 gap-8 overflow-hidden">
-          {/* Main Visual: DAG & Terminal */}
           <div className="col-span-2 flex flex-col gap-8 overflow-hidden">
             <div className="h-1/2 bg-white rounded-3xl border border-slate-200 shadow-sm relative overflow-hidden">
-               <div className="absolute top-4 left-6 z-10 font-bold text-[10px] text-slate-400 uppercase tracking-widest bg-white/80 p-2 rounded-lg border border-slate-100">Workflow_Topology_v1.2</div>
-               <ReactFlow nodes={[]} edges={[]}>
+               <div className="absolute top-4 left-6 z-10 font-bold text-[10px] text-slate-400 uppercase tracking-widest bg-white/80 p-2 rounded-lg border border-slate-100">Workflow_Topology</div>
+               <ReactFlow nodes={nodes} edges={edges}>
                   <Background color="#f1f5f9" gap={20} />
+                  <Controls />
                </ReactFlow>
             </div>
             
@@ -285,10 +366,10 @@ const RunView = () => {
                 <Terminal size={12}/>
               </div>
               <div className="flex-1 p-6 overflow-y-auto text-[11px] leading-relaxed">
-                {logs.map((line, i) => (
-                  <div key={i} className="flex gap-4 group">
+                {allLogs.map((line, i) => (
+                  <div key={i} className="flex gap-4 group text-emerald-400/90">
                     <span className="text-slate-700 select-none">{i+1}</span>
-                    <span className="text-emerald-400/90 whitespace-pre-wrap">{line}</span>
+                    <span className="whitespace-pre-wrap">{line}</span>
                   </div>
                 ))}
                 <div ref={logEndRef} />
@@ -296,23 +377,12 @@ const RunView = () => {
             </div>
           </div>
 
-          {/* Sidebar: Diagnostics */}
           <div className="flex flex-col gap-6 overflow-y-auto pr-2">
              <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm">
                 <h3 className="text-xs font-black text-slate-400 uppercase mb-6 tracking-widest flex items-center gap-2">
                    <BarChart2 size={16} className="text-blue-500"/> Scientific_QC_Report
                 </h3>
                 <QCChart data={qcData} name="Mapping Quality (Phred)" />
-                <div className="mt-8 space-y-4">
-                  <div className="flex justify-between items-center p-3 bg-slate-50 rounded-xl">
-                    <span className="text-xs font-bold text-slate-500">Read Count</span>
-                    <span className="text-sm font-mono font-bold text-slate-900">42,501,102</span>
-                  </div>
-                  <div className="flex justify-between items-center p-3 bg-amber-50 border border-amber-100 rounded-xl">
-                    <span className="text-xs font-bold text-amber-700">Warning</span>
-                    <span className="text-[10px] font-bold text-amber-700 uppercase">Low Diversity</span>
-                  </div>
-                </div>
              </div>
 
              <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm">
@@ -354,37 +424,17 @@ const CompareView = () => {
       <Link to="/" className="text-slate-500 hover:text-slate-800 text-sm mb-8 inline-block">← Return to Dashboard</Link>
       <div className="flex justify-between items-center mb-12">
         <h1 className="text-4xl font-black uppercase tracking-tighter">Run_Differential</h1>
-        <div className="bg-indigo-100 text-indigo-700 px-4 py-2 rounded-xl text-xs font-bold">DELTA_ANALYSIS_v1</div>
       </div>
-
       <div className="grid grid-cols-2 gap-12">
-        <div className="space-y-8">
-           <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm relative overflow-hidden">
-              <div className="absolute top-0 left-0 w-1 h-full bg-slate-400"></div>
-              <div className="text-[10px] font-bold text-slate-400 uppercase mb-2">Subject A</div>
-              <h2 className="text-xl font-bold mb-4">{runA.name || 'Web Run'}</h2>
-              <div className="font-mono text-xs text-slate-500">{runAId}</div>
-           </div>
-           {/* Parameters and Metrics list would go here */}
-           <div className="bg-slate-50 p-6 rounded-2xl border border-slate-200 font-mono text-xs space-y-2">
-              <div className="flex justify-between"><span>CPU_THREADS</span><span>4</span></div>
-              <div className="flex justify-between"><span>MEMORY_CAP</span><span>8G</span></div>
-              <div className="flex justify-between border-t pt-2 mt-4 text-emerald-600 font-bold"><span>MAPPING_RATE</span><span>98.2%</span></div>
-           </div>
+        <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm relative overflow-hidden">
+          <div className="text-[10px] font-bold text-slate-400 uppercase mb-2">Subject A</div>
+          <h2 className="text-xl font-bold mb-4">{runA.name}</h2>
+          <div className="font-mono text-xs text-slate-500">{runAId}</div>
         </div>
-
-        <div className="space-y-8">
-           <div className="bg-white p-8 rounded-3xl border-2 border-indigo-500 shadow-xl relative overflow-hidden">
-              <div className="absolute top-0 left-0 w-1 h-full bg-indigo-500"></div>
-              <div className="text-[10px] font-bold text-indigo-400 uppercase mb-2">Subject B</div>
-              <h2 className="text-xl font-bold mb-4">{runB.name || 'Web Run'}</h2>
-              <div className="font-mono text-xs text-slate-500">{runBId}</div>
-           </div>
-           <div className="bg-slate-50 p-6 rounded-2xl border border-slate-200 font-mono text-xs space-y-2">
-              <div className="flex justify-between"><span>CPU_THREADS</span><span>8 <span className="text-indigo-600 font-bold">(+4)</span></span></div>
-              <div className="flex justify-between"><span>MEMORY_CAP</span><span>16G <span className="text-indigo-600 font-bold">(2x)</span></span></div>
-              <div className="flex justify-between border-t pt-2 mt-4 text-emerald-600 font-bold"><span>MAPPING_RATE</span><span>99.1% <span className="text-indigo-600">(+0.9%)</span></span></div>
-           </div>
+        <div className="bg-white p-8 rounded-3xl border-2 border-indigo-500 shadow-xl relative overflow-hidden">
+          <div className="text-[10px] font-bold text-indigo-400 uppercase mb-2">Subject B</div>
+          <h2 className="text-xl font-bold mb-4">{runB.name}</h2>
+          <div className="font-mono text-xs text-slate-500">{runBId}</div>
         </div>
       </div>
     </div>

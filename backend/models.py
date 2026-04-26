@@ -51,6 +51,11 @@ def init_db(db_url=None):
     if db_url is None:
         db_path = os.path.join(os.path.expanduser("~/biograph/backend"), "biograph_hardened.db")
         db_url = f"sqlite:///{db_path}"
-    engine = create_engine(db_url)
+    
+    # SDE-3 Fix: Handle concurrent reads/writes and prevent locking
+    engine = create_engine(
+        db_url, 
+        connect_args={"check_same_thread": False, "timeout": 30}
+    )
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)
