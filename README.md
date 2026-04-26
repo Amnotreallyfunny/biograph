@@ -29,7 +29,7 @@ cd backend
 python3 -m venv venv
 source venv/bin/activate
 # Install dependencies
-pip install fastapi uvicorn pydantic
+pip install fastapi uvicorn pydantic python-multipart
 # Run server
 python main.py
 ```
