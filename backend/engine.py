@@ -8,29 +8,7 @@ from collections import deque
 from sqlalchemy.orm import Session
 from models import Run, Task, QualityMetric
 from validators import validator_registry
-
-class StreamManager:
-    def __init__(self):
-        self.queues = {} # run_id -> list of asyncio.Queues
-
-    def subscribe(self, run_id: str):
-        if run_id not in self.queues:
-            self.queues[run_id] = []
-        q = asyncio.Queue()
-        self.queues[run_id].append(q)
-        return q
-
-    async def publish(self, run_id: str, event_type: str, data: dict):
-        if run_id in self.queues:
-            msg = {"event": event_type, "data": data}
-            for q in self.queues[run_id]:
-                await q.put(msg)
-
-    def cleanup(self, run_id: str):
-        if run_id in self.queues:
-            del self.queues[run_id]
-
-stream_manager = StreamManager()
+from events import event_bus
 
 class HardenedRunnerEngine:
     def __init__(self, session: Session):
@@ -59,14 +37,14 @@ class HardenedRunnerEngine:
                 node_id = queue.popleft()
                 task = tasks[node_id]
                 
-                await stream_manager.publish(run_id, "status", {"task_id": node_id, "status": "running"})
+                await event_bus.publish(run_id, "status", {"task_id": node_id, "status": "running"})
                 await self._run_task_supervised(task, dag_json["node_map"][node_id], run_id)
-                await stream_manager.publish(run_id, "status", {"task_id": node_id, "status": task.status})
+                await event_bus.publish(run_id, "status", {"task_id": node_id, "status": task.status})
                 
                 if task.status == "failed":
                     run.status = "failed"
                     self.session.commit()
-                    await stream_manager.publish(run_id, "done", {"status": "failed"})
+                    await event_bus.publish(run_id, "done", {"status": "failed"})
                     return
 
                 for neighbor in adj[node_id]:
@@ -77,7 +55,7 @@ class HardenedRunnerEngine:
             run.status = "success"
             run.end_time = datetime.utcnow()
             self.session.commit()
-            await stream_manager.publish(run_id, "done", {"status": "success"})
+            await event_bus.publish(run_id, "done", {"status": "success"})
 
         finally:
             self.cleanup_processes()
@@ -106,7 +84,7 @@ class HardenedRunnerEngine:
                     break
                 if line:
                     full_logs.append(line)
-                    await stream_manager.publish(run_id, "log", {"task_id": task.node_id, "line": line.strip()})
+                    await event_bus.publish(run_id, "log", {"task_id": task.node_id, "line": line.strip()})
             
             stdout = "".join(full_logs)
             self.active_processes.remove(proc)

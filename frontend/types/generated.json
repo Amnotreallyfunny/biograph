@@ -1,0 +1,213 @@
+{
+  "Run": {
+    "$defs": {
+      "TaskResponse": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "node_id": {
+            "title": "Node Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "validation_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Validation Status"
+          },
+          "duration": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration"
+          }
+        },
+        "required": [
+          "id",
+          "node_id",
+          "status",
+          "validation_status",
+          "duration"
+        ],
+        "title": "TaskResponse",
+        "type": "object"
+      }
+    },
+    "properties": {
+      "id": {
+        "title": "Id",
+        "type": "string"
+      },
+      "name": {
+        "title": "Name",
+        "type": "string"
+      },
+      "status": {
+        "title": "Status",
+        "type": "string"
+      },
+      "created_at": {
+        "format": "date-time",
+        "title": "Created At",
+        "type": "string"
+      },
+      "tasks": {
+        "items": {
+          "$ref": "#/$defs/TaskResponse"
+        },
+        "title": "Tasks",
+        "type": "array"
+      }
+    },
+    "required": [
+      "id",
+      "name",
+      "status",
+      "created_at",
+      "tasks"
+    ],
+    "title": "RunResponse",
+    "type": "object"
+  },
+  "Task": {
+    "properties": {
+      "id": {
+        "title": "Id",
+        "type": "string"
+      },
+      "node_id": {
+        "title": "Node Id",
+        "type": "string"
+      },
+      "status": {
+        "title": "Status",
+        "type": "string"
+      },
+      "validation_status": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Validation Status"
+      },
+      "duration": {
+        "anyOf": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Duration"
+      }
+    },
+    "required": [
+      "id",
+      "node_id",
+      "status",
+      "validation_status",
+      "duration"
+    ],
+    "title": "TaskResponse",
+    "type": "object"
+  },
+  "DAG": {
+    "$defs": {
+      "DAGEdge": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "target": {
+            "title": "Target",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "source",
+          "target"
+        ],
+        "title": "DAGEdge",
+        "type": "object"
+      },
+      "DAGNode": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          },
+          "data": {
+            "additionalProperties": true,
+            "title": "Data",
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "data"
+        ],
+        "title": "DAGNode",
+        "type": "object"
+      }
+    },
+    "properties": {
+      "name": {
+        "title": "Name",
+        "type": "string"
+      },
+      "nodes": {
+        "items": {
+          "$ref": "#/$defs/DAGNode"
+        },
+        "title": "Nodes",
+        "type": "array"
+      },
+      "edges": {
+        "items": {
+          "$ref": "#/$defs/DAGEdge"
+        },
+        "title": "Edges",
+        "type": "array"
+      }
+    },
+    "required": [
+      "name",
+      "nodes",
+      "edges"
+    ],
+    "title": "DAGPayload",
+    "type": "object"
+  }
+}
