@@ -1,0 +1,30 @@
+{
+  "name": "Hardened Validation Pipeline",
+  "nodes": [
+    { 
+      "id": "generate-fastq", 
+      "type": "processNode", 
+      "data": { 
+        "command": "echo '@read1\nACTG\n+\n####' > sample.fastq",
+        "output_type": "FASTQ",
+        "output_path": "sample.fastq"
+      } 
+    },
+    { 
+      "id": "small-bam", 
+      "type": "processNode", 
+      "data": { 
+        "command": "echo 'BAM_HEADER' > sample.bam",
+        "output_type": "BAM",
+        "output_path": "sample.bam"
+      } 
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "generate-fastq", "target": "small-bam" }
+  ],
+  "node_map": {
+    "generate-fastq": { "output_type": "FASTQ", "output_path": "sample.fastq" },
+    "small-bam": { "output_type": "BAM", "output_path": "sample.bam" }
+  }
+}

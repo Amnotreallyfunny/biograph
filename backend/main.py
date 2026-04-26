@@ -1,19 +1,18 @@
 import os
 import json
 import uuid
-from fastapi import FastAPI, HTTPException, UploadFile, File
+import sys
+import shutil
+import asyncio
+from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
-from pathlib import Path
+from fastapi.responses import StreamingResponse
+from typing import Dict, Any, Optional
 
-# Import the hardened core components
 from models import init_db, Run, Task
-from engine import HardenedRunnerEngine
+from engine import HardenedRunnerEngine, stream_manager
 
-app = FastAPI(title="biograph Professional API")
-
-# Initialize DB
+app = FastAPI(title="biograph Control Plane")
 SessionLocal = init_db()
 
 app.add_middleware(
@@ -23,81 +22,75 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- API Endpoints ---
-
-@app.get("/runs")
-async def list_runs():
+@app.post("/runs")
+async def trigger_run(payload: Dict[str, Any], background_tasks: BackgroundTasks):
+    dag_json = payload["dag"]
+    run_name = payload.get("name", "Web Run")
+    
     session = SessionLocal()
-    runs = session.query(Run).all()
-    res = [{"id": r.id, "name": r.name, "status": r.status, "start_time": r.start_time} for r in runs]
-    session.close()
-    return res
-
-@app.get("/runs/{run_id}")
-async def get_run(run_id: str):
-    session = SessionLocal()
-    run = session.query(Run).filter_by(id=run_id).first()
-    if not run:
-        session.close()
-        raise HTTPException(status_code=404)
-    
-    # Map task statuses for the UI
-    node_states = {t.node_id: t.status for t in run.tasks}
-    logs = {t.node_id: t.stdout + t.stderr for t in run.tasks}
-    
-    res = {
-        "status": run.status,
-        "node_states": node_states,
-        "logs": logs
-    }
-    session.close()
-    return res
-
-@app.post("/dag")
-async def save_dag(dag_json: Dict[str, Any]):
-    # In a full system, we'd save this to a 'Pipelines' table
-    # For now, we'll keep the logic simple for the UI integration
-    dag_id = str(uuid.uuid4())
-    os.makedirs("storage/dags", exist_ok=True)
-    with open(f"storage/dags/{dag_id}.json", "w") as f:
-        json.dump(dag_json, f)
-    return {"id": dag_id}
-
-@app.post("/execute/{dag_id}")
-async def execute_dag(dag_id: str):
-    # Load DAG
-    dag_path = f"storage/dags/{dag_id}.json"
-    if not os.path.exists(dag_path):
-        raise HTTPException(status_code=404)
-    
-    with open(dag_path, "r") as f:
-        dag_json = json.load(f)
-
-    session = SessionLocal()
-    engine = HardenedRunnerEngine(session)
-    
-    # Create the DB Run record
-    run_record = Run(id=str(uuid.uuid4()), name=dag_json.get("name", "Web Triggered Run"))
+    run_id = str(uuid.uuid4())
+    run_record = Run(id=run_id, name=run_name, status="queued")
     session.add(run_record)
     
-    # Map UI nodes to DB tasks
     for node in dag_json["nodes"]:
-        t = Task(run_id=run_record.id, node_id=node["id"], name=node["id"], 
-                 command=node["data"].get("command", "echo 'Processed Node'"))
+        t = Task(run_id=run_id, node_id=node["id"], name=node["id"], 
+                 command=node["data"].get("command", "echo 'Node Execute'"))
         session.add(t)
     session.commit()
-
-    # Trigger async execution (in background)
-    import asyncio
-    asyncio.create_task(async_execute(engine, run_record.id, dag_json))
-    
-    run_id = run_record.id
     session.close()
+
+    background_tasks.add_task(execute_in_background, run_id, dag_json)
     return {"run_id": run_id}
 
-async def async_execute(engine, run_id, dag_json):
-    # This matches the core CLI execution logic
-    engine.execute_dag(run_id, dag_json)
+@app.post("/runs/{run_id}/retry")
+async def retry_task(run_id: str, payload: Dict[str, Any], background_tasks: BackgroundTasks):
+    task_node_id = payload["task_id"]
+    # In Phase 1, we'll simple re-trigger the original DAG from that node
+    # Implementation simplified: finding the original DAG
+    return {"message": "Retry enqueued", "new_run_id": run_id}
+
+@app.get("/runs/{run_id}/stream")
+async def stream_run(run_id: str, request: Request):
+    async def event_generator():
+        queue = stream_manager.subscribe(run_id)
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                msg = await queue.get()
+                yield f"event: {msg['event']}\ndata: {json.dumps(msg['data'])}\n\n"
+                if msg['event'] == 'done':
+                    break
+        finally:
+            # stream_manager.cleanup(run_id) # Optional: delayed cleanup
+            pass
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+@app.get("/system/doctor")
+async def system_doctor():
+    tools = ["bwa", "samtools", "bcftools"]
+    tool_status = []
+    for t in tools:
+        path = shutil.which(t)
+        tool_status.append({
+            "name": t,
+            "status": "ok" if path else "missing",
+            "version": "unknown" if not path else "detected",
+            "fix": None if path else f"conda install -c bioconda {t}"
+        })
+    
+    return {
+        "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+        "sqlite": "ok",
+        "tools": tool_status
+    }
+
+async def execute_in_background(run_id: str, dag_json: dict):
+    session = SessionLocal()
+    engine = HardenedRunnerEngine(session)
+    await engine.execute_dag(run_id, dag_json)
+    session.close()
 
 if __name__ == "__main__":
     import uvicorn

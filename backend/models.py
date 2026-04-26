@@ -3,6 +3,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 from datetime import datetime
 import uuid
+import os
 
 Base = declarative_base()
 
@@ -46,7 +47,10 @@ class QualityMetric(Base):
     name = Column(String, nullable=False)
     value = Column(Float, nullable=False)
 
-def init_db(db_url="sqlite:///biograph_hardened.db"):
+def init_db(db_url=None):
+    if db_url is None:
+        db_path = os.path.join(os.path.expanduser("~/biograph/backend"), "biograph_hardened.db")
+        db_url = f"sqlite:///{db_path}"
     engine = create_engine(db_url)
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)
